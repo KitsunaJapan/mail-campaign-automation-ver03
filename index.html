@@ -442,6 +442,7 @@ var PBADGE = { asap: 'asap', high: 'high', mid: 'mid', low: 'low' };
 var STATE_KEY = 'strattask_state';
 var state = { goals: [], tasks: [] };
 var googleToken = '';
+var appPassword = '';
 var appConfig = {};
 var milestoneInputs = [];
 
@@ -451,6 +452,7 @@ function loadState() {
     if (s) { var p = JSON.parse(s); state.goals = p.goals || []; state.tasks = p.tasks || []; }
   } catch(e) {}
   googleToken = localStorage.getItem('strattask_token') || '';
+  appPassword = localStorage.getItem('strattask_pw') || '';
 }
 function saveState() {
   try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch(e) {}
@@ -478,7 +480,7 @@ window.onload = function() {
       // 認証済みなら自動でアプリを開く
       fetchConfig().then(function() {
         // ログイン済みセッションがあればそのまま表示
-        fetch('/api/config', { credentials: 'include' })
+        fetch('/api/config')
           .then(function(r) { return r.json(); })
           .then(function() {
             updateTokenStatus();
@@ -486,6 +488,22 @@ window.onload = function() {
           });
       });
     }
+  }
+  // 保存済みパスワードがあれば自動ログイン
+  if (appPassword) {
+    fetch('/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: appPassword })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.success) {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('app-wrap').classList.add('visible');
+        loadEnvStatus();
+      } else {
+        appPassword = ''; localStorage.removeItem('strattask_pw');
+      }
+    }).catch(function() {});
   }
   fetchConfig();
 };
@@ -513,12 +531,13 @@ function doLogin() {
   fetch('/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: pw }),
-    credentials: 'include'
+    body: JSON.stringify({ password: pw })
   })
   .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
   .then(function(res) {
     if (res.ok) {
+      appPassword = pw;
+      localStorage.setItem('strattask_pw', pw);
       document.getElementById('login-screen').style.display = 'none';
       document.getElementById('app-wrap').classList.add('visible');
       loadEnvStatus();
@@ -537,7 +556,8 @@ function doLogin() {
 }
 
 function doLogout() {
-  fetch('/logout', { method: 'POST', credentials: 'include' })
+  appPassword = ''; localStorage.removeItem('strattask_pw');
+  fetch('/logout', { method: 'POST' })
     .finally(function() {
       document.getElementById('app-wrap').classList.remove('visible');
       document.getElementById('login-screen').style.display = 'flex';
@@ -731,9 +751,8 @@ function setGoalStatus(type, msg) {
 function generateTasks(goal, callback) {
   fetch('/api/generate_tasks', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ goal: goal }),
-    credentials: 'include'
+    headers: apiHeaders(),
+    body: JSON.stringify({ goal: goal })
   })
   .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
   .then(function(res) {
@@ -1005,12 +1024,15 @@ function saveManualTask() {
 // ════════════════════════════════════════
 // Sheets API（Flask経由）
 // ════════════════════════════════════════
+function apiHeaders() {
+  return { 'Content-Type': 'application/json', 'X-App-Password': appPassword };
+}
+
 function sheetsGet(range, cb, errCb) {
   fetch('/api/sheets/get', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: googleToken, range: range }),
-    credentials: 'include'
+    headers: apiHeaders(),
+    body: JSON.stringify({ token: googleToken, range: range })
   })
   .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
   .then(function(res) {
@@ -1023,9 +1045,8 @@ function sheetsGet(range, cb, errCb) {
 function sheetsBatchUpdate(updates, cb, errCb) {
   fetch('/api/sheets/batch_update', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: googleToken, data: updates }),
-    credentials: 'include'
+    headers: apiHeaders(),
+    body: JSON.stringify({ token: googleToken, data: updates })
   })
   .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
   .then(function(res) {
@@ -1038,9 +1059,8 @@ function sheetsBatchUpdate(updates, cb, errCb) {
 function sheetsPut(range, values, cb, errCb) {
   fetch('/api/sheets/put', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: googleToken, range: range, values: values }),
-    credentials: 'include'
+    headers: apiHeaders(),
+    body: JSON.stringify({ token: googleToken, range: range, values: values })
   })
   .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
   .then(function(res) {
