@@ -286,12 +286,22 @@ textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
   <!-- 週次タスクタブ -->
   <div class="tab-content" id="tab-weekly">
     <div class="week-controls">
-      <h3 style="font-size:14px;font-weight:600;">月別目標管理シート（今週）</h3>
-      <select id="week-sort" style="font-size:12px;padding:5px 8px;border:1px solid #ddd;border-radius:6px;" onchange="renderWeekly()">
-        <option value="priority">優先度順</option>
-        <option value="time">時間帯順</option>
-      </select>
+      <h3 style="font-size:14px;font-weight:600;">週次タスク</h3>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <button class="btn small" onclick="changeWeek(-1)">◀ 前週</button>
+        <span id="week-label" style="font-size:13px;font-weight:600;min-width:160px;text-align:center;"></span>
+        <button class="btn small" onclick="changeWeek(1)">次週 ▶</button>
+        <button class="btn small" onclick="jumpToToday()" style="margin-left:4px;">今週</button>
+        <select id="week-sort" style="font-size:12px;padding:5px 8px;border:1px solid #ddd;border-radius:6px;margin-left:8px;" onchange="renderWeekly()">
+          <option value="priority">優先度順</option>
+          <option value="time">時間帯順</option>
+        </select>
+        <select id="goal-filter" style="font-size:12px;padding:5px 8px;border:1px solid #ddd;border-radius:6px;" onchange="renderWeekly()">
+          <option value="">全目標</option>
+        </select>
+      </div>
     </div>
+    <div style="font-size:11px;color:#aaa;margin-bottom:8px;" id="week-task-count"></div>
     <div class="week-scroll">
       <div class="week-grid" id="week-grid"></div>
     </div>
@@ -441,6 +451,7 @@ var PBADGE = { asap: 'asap', high: 'high', mid: 'mid', low: 'low' };
 // ════════════════════════════════════════
 var STATE_KEY = 'strattask_state';
 var state = { goals: [], tasks: [] };
+var currentWeekOffset = 0; // 今週からの週オフセット
 var googleToken = '';
 var appPassword = '';
 var appConfig = {};
@@ -927,27 +938,76 @@ function updateGoalProgress(goalId) {
 // ════════════════════════════════════════
 // 週次タスク
 // ════════════════════════════════════════
-function renderWeekly() {
-  var grid = document.getElementById('week-grid');
+function getWeekMonday(offsetWeeks) {
   var today = new Date();
   var monday = new Date(today);
-  monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+  monday.setDate(today.getDate() - ((today.getDay() + 6) % 7) + offsetWeeks * 7);
+  monday.setHours(0,0,0,0);
+  return monday;
+}
+
+function changeWeek(delta) {
+  currentWeekOffset += delta;
+  renderWeekly();
+}
+
+function jumpToToday() {
+  currentWeekOffset = 0;
+  renderWeekly();
+}
+
+function renderWeekly() {
+  var grid = document.getElementById('week-grid');
+  var monday = getWeekMonday(currentWeekOffset);
+  var today = new Date(); today.setHours(0,0,0,0);
   var todayStr = today.toISOString().split('T')[0];
   var dayNames = ['月','火','水','木','金','土','日'];
-  var sortMode = document.getElementById('week-sort').value;
+  var sortMode = (document.getElementById('week-sort') || {value:'priority'}).value;
+  var goalFilter = (document.getElementById('goal-filter') || {value:''}).value;
   var timeOrder = {'09-12':0,'12-15':1,'15-18':2,'18-21':3,'21-24':4};
+
+  // 週ラベル更新
+  var weekEnd = new Date(monday); weekEnd.setDate(monday.getDate() + 6);
+  var lbl = document.getElementById('week-label');
+  if (lbl) {
+    var fmt = function(d) { return (d.getMonth()+1) + '/' + d.getDate(); };
+    lbl.textContent = fmt(monday) + ' 〜 ' + fmt(weekEnd);
+    if (currentWeekOffset === 0) lbl.textContent += ' （今週）';
+    else if (currentWeekOffset < 0) lbl.textContent += ' （' + Math.abs(currentWeekOffset) + '週前）';
+    else lbl.textContent += ' （' + currentWeekOffset + '週後）';
+  }
+
+  // 目標フィルタプルダウンを更新
+  var sel = document.getElementById('goal-filter');
+  if (sel) {
+    var currentVal = sel.value;
+    sel.innerHTML = '<option value="">全目標</option>' +
+      state.goals.map(function(g) {
+        return '<option value="' + g.id + '"' + (currentVal == g.id ? ' selected' : '') + '>' + esc(g.content.slice(0,20)) + '</option>';
+      }).join('');
+  }
+
   var html = '';
+  var weekTaskCount = 0;
   for (var i = 0; i < 7; i++) {
-    var d = new Date(monday);
-    d.setDate(monday.getDate() + i);
+    var d = new Date(monday); d.setDate(monday.getDate() + i);
     var ds = d.toISOString().split('T')[0];
     var isToday = ds === todayStr;
-    var dayTasks = state.tasks.filter(function(t) { return t.date === ds; });
+    var dayTasks = state.tasks.filter(function(t) {
+      if (t.date !== ds) return false;
+      if (goalFilter && String(t.goalId) !== String(goalFilter)) return false;
+      return true;
+    });
+    weekTaskCount += dayTasks.length;
     if (sortMode === 'priority') dayTasks.sort(function(a,b) { return (PORDER[a.priority]||4)-(PORDER[b.priority]||4); });
     else dayTasks.sort(function(a,b) { return (timeOrder[a.time]||0)-(timeOrder[b.time]||0); });
 
     var tasksHtml = dayTasks.map(function(t) {
+      var goalName = '';
+      var g = state.goals.find(function(g) { return g.id === t.goalId; });
+      if (g) goalName = '<div style="font-size:9px;color:#1d9e75;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(g.content.slice(0,16)) + '</div>';
       return '<div class="task-item' + (t.done ? ' done' : '') + '" id="task-' + t.id + '">' +
+        goalName +
         '<div class="task-top">' +
           '<input type="checkbox" class="task-checkbox"' + (t.done ? ' checked' : '') + ' onchange="toggleTask(' + t.id + ',this.checked)">' +
           '<div class="task-name' + (t.done ? ' done-text' : '') + '" contenteditable="true" onblur="updateTaskName(' + t.id + ',this.textContent)">' + esc(t.name) + '</div>' +
@@ -970,6 +1030,10 @@ function renderWeekly() {
       '</div>';
   }
   grid.innerHTML = html;
+
+  // タスク数表示
+  var countEl = document.getElementById('week-task-count');
+  if (countEl) countEl.textContent = 'この週のタスク: ' + weekTaskCount + '件';
 }
 
 function toggleTask(id, checked) {
@@ -1025,7 +1089,9 @@ function saveManualTask() {
 // Sheets API（Flask経由）
 // ════════════════════════════════════════
 function apiHeaders() {
-  return { 'Content-Type': 'application/json', 'X-App-Password': appPassword };
+  // 毎回localStorageから読む（変数が未セットの場合でも確実に動く）
+  var pw = appPassword || localStorage.getItem('strattask_pw') || '';
+  return { 'Content-Type': 'application/json', 'X-App-Password': pw };
 }
 
 function sheetsGet(range, cb, errCb) {
@@ -1119,70 +1185,88 @@ function syncKPI() {
 function syncTasks() {
   if (!googleToken) { showToast('先にトークンを設定してください', 'error'); return; }
   setSyncResult('sync-tasks-result', '', '');
-  // 月ごとにグループ化
-  var byMonth = {};
-  state.tasks.forEach(function(t) {
-    if (!t.date) return;
-    var mm = String(new Date(t.date).getMonth() + 1).padStart(2, '0');
-    if (!byMonth[mm]) byMonth[mm] = [];
-    byMonth[mm].push(t);
-  });
-  var months = Object.keys(byMonth);
-  if (!months.length) {
-    setSyncResult('sync-tasks-result', 'ok', '転記するタスクがありません');
+
+  if (!state.goals.length) {
+    setSyncResult('sync-tasks-result', 'ok', '転記する目標がありません');
     return;
   }
+
+  // KPIごとに転記（各KPIの全タスクを対象）
   var totalWritten = 0;
-  var remaining = months.length;
+  var remainingGoals = state.goals.length;
   var hasError = false;
 
-  months.forEach(function(mm) {
-    var sheetName = sheetMonth(mm);
-    var tasks = byMonth[mm];
-    sheetsGet("'" + sheetName + "'!B2:B200", function(data) {
-      var rows = data.values || [];
-      // B列（時間帯）が空の行を探す（A列は日付固定なので除外）
-      var emptyRows = [];
-      for (var i = 0; i < rows.length; i++) {
-        if (!rows[i] || !rows[i][0]) emptyRows.push(i + 2); // B列が空
-      }
-      // 優先度順ソート
-      var sorted = tasks.slice().sort(function(a,b) { return (PORDER[a.priority]||4)-(PORDER[b.priority]||4); });
-      var updates = [];
-      var idx = 0;
-      sorted.forEach(function(t) {
-        if (idx >= emptyRows.length) return;
-        var row = emptyRows[idx++];
-        // B列: 時間帯, C列: タスク名+詳細, H列: 優先度, I列: チェック, J列: 備考
-        updates.push({ range: "'" + sheetName + "'!B" + row, values: [[t.time]] });
-        updates.push({ range: "'" + sheetName + "'!C" + row, values: [[t.name + (t.detail ? ' / ' + t.detail : '')]] });
-        updates.push({ range: "'" + sheetName + "'!H" + row, values: [[PLABEL[t.priority] || '']] });
-        updates.push({ range: "'" + sheetName + "'!I" + row, values: [[t.done ? 'TRUE' : 'FALSE']] });
-        if (t.note) updates.push({ range: "'" + sheetName + "'!J" + row, values: [[t.note]] });
-        totalWritten++;
-      });
-      if (!updates.length) { remaining--; checkSyncDone(); return; }
-      sheetsBatchUpdate(updates, function() {
-        remaining--;
-        checkSyncDone();
+  state.goals.forEach(function(goal) {
+    // このKPIに紐づくタスクを全て取得
+    var goalTasks = state.tasks.filter(function(t) { return t.goalId === goal.id; });
+    if (!goalTasks.length) { remainingGoals--; checkAllDone(); return; }
+
+    // 月ごとにグループ化
+    var byMonth = {};
+    goalTasks.forEach(function(t) {
+      if (!t.date) return;
+      var mm = String(new Date(t.date).getMonth() + 1).padStart(2, '0');
+      if (!byMonth[mm]) byMonth[mm] = [];
+      byMonth[mm].push(t);
+    });
+
+    var months = Object.keys(byMonth);
+    if (!months.length) { remainingGoals--; checkAllDone(); return; }
+
+    var remainingMonths = months.length;
+
+    months.forEach(function(mm) {
+      var sheetName = sheetMonth(mm);
+      var tasks = byMonth[mm];
+
+      sheetsGet("'" + sheetName + "'!B2:B200", function(data) {
+        var rows = data.values || [];
+        // B列が空の行を探す
+        var emptyRows = [];
+        for (var i = 0; i < rows.length; i++) {
+          if (!rows[i] || !rows[i][0]) emptyRows.push(i + 2);
+        }
+        // 優先度順ソート
+        var sorted = tasks.slice().sort(function(a,b) { return (PORDER[a.priority]||4)-(PORDER[b.priority]||4); });
+        var updates = [];
+        var idx = 0;
+        sorted.forEach(function(t) {
+          if (idx >= emptyRows.length) return;
+          var row = emptyRows[idx++];
+          updates.push({ range: "'" + sheetName + "'!B" + row, values: [[t.time]] });
+          updates.push({ range: "'" + sheetName + "'!C" + row, values: [[t.name + (t.detail ? ' / ' + t.detail : '')]] });
+          updates.push({ range: "'" + sheetName + "'!H" + row, values: [[PLABEL[t.priority] || '']] });
+          updates.push({ range: "'" + sheetName + "'!I" + row, values: [[t.done ? 'TRUE' : 'FALSE']] });
+          if (t.note) updates.push({ range: "'" + sheetName + "'!J" + row, values: [[t.note]] });
+          totalWritten++;
+        });
+
+        if (!updates.length) {
+          remainingMonths--;
+          if (!remainingMonths) { remainingGoals--; checkAllDone(); }
+          return;
+        }
+        sheetsBatchUpdate(updates, function() {
+          remainingMonths--;
+          if (!remainingMonths) { remainingGoals--; checkAllDone(); }
+        }, function(err) {
+          hasError = true;
+          remainingMonths--;
+          if (!remainingMonths) { remainingGoals--; checkAllDone(); }
+        });
       }, function(err) {
-        hasError = true;
-        remaining--;
-        checkSyncDone();
+        remainingMonths--;
+        if (!remainingMonths) { remainingGoals--; checkAllDone(); }
       });
-    }, function(err) {
-      // シートが存在しない場合はスキップ
-      remaining--;
-      checkSyncDone();
     });
   });
 
-  function checkSyncDone() {
-    if (remaining > 0) return;
+  function checkAllDone() {
+    if (remainingGoals > 0) return;
     if (hasError) {
       setSyncResult('sync-tasks-result', 'ng', '一部シートへの転記に失敗しました');
     } else {
-      setSyncResult('sync-tasks-result', 'ok', '✓ ' + totalWritten + '件のタスクを転記しました');
+      setSyncResult('sync-tasks-result', 'ok', '✓ ' + totalWritten + '件のタスクを転記しました（' + state.goals.length + '件のKPI分）');
       showToast('月別目標管理シートへの転記完了！', 'success');
     }
   }
@@ -1214,41 +1298,52 @@ function syncKPISilent(cb) {
 
 function syncTasksSilent(cb) {
   if (!googleToken) { if (cb) cb(); return; }
-  var byMonth = {};
-  state.tasks.forEach(function(t) {
-    if (!t.date) return;
-    var mm = String(new Date(t.date).getMonth() + 1).padStart(2, '0');
-    if (!byMonth[mm]) byMonth[mm] = [];
-    byMonth[mm].push(t);
-  });
-  var months = Object.keys(byMonth);
-  if (!months.length) { if (cb) cb(); return; }
-  var remaining = months.length;
-  months.forEach(function(mm) {
-    var sheetName = sheetMonth(mm);
-    var tasks = byMonth[mm];
-    sheetsGet("'" + sheetName + "'!B2:B200", function(data) {
-      var rows = data.values || [];
-      var emptyRows = [];
-      for (var i = 0; i < rows.length; i++) {
-        if (!rows[i] || !rows[i][0]) emptyRows.push(i + 2);
-      }
-      var sorted = tasks.slice().sort(function(a,b) { return (PORDER[a.priority]||4)-(PORDER[b.priority]||4); });
-      var updates = [];
-      var idx = 0;
-      sorted.forEach(function(t) {
-        if (idx >= emptyRows.length) return;
-        var row = emptyRows[idx++];
-        updates.push({ range:"'" + sheetName + "'!B" + row, values:[[t.time]] });
-        updates.push({ range:"'" + sheetName + "'!C" + row, values:[[t.name + (t.detail ? ' / ' + t.detail : '')]] });
-        updates.push({ range:"'" + sheetName + "'!H" + row, values:[[PLABEL[t.priority]||'']] });
-        updates.push({ range:"'" + sheetName + "'!I" + row, values:[[t.done?'TRUE':'FALSE']] });
-        if (t.note) updates.push({ range:"'" + sheetName + "'!J" + row, values:[[t.note]] });
-      });
-      if (updates.length) {
-        sheetsBatchUpdate(updates, function() { remaining--; if (!remaining && cb) cb(); }, function() { remaining--; if (!remaining && cb) cb(); });
-      } else { remaining--; if (!remaining && cb) cb(); }
-    }, function() { remaining--; if (!remaining && cb) cb(); });
+  if (!state.goals.length) { if (cb) cb(); return; }
+
+  var remainingGoals = state.goals.length;
+
+  state.goals.forEach(function(goal) {
+    var goalTasks = state.tasks.filter(function(t) { return t.goalId === goal.id; });
+    if (!goalTasks.length) { remainingGoals--; if (!remainingGoals && cb) cb(); return; }
+
+    var byMonth = {};
+    goalTasks.forEach(function(t) {
+      if (!t.date) return;
+      var mm = String(new Date(t.date).getMonth() + 1).padStart(2, '0');
+      if (!byMonth[mm]) byMonth[mm] = [];
+      byMonth[mm].push(t);
+    });
+    var months = Object.keys(byMonth);
+    if (!months.length) { remainingGoals--; if (!remainingGoals && cb) cb(); return; }
+
+    var remainingMonths = months.length;
+    months.forEach(function(mm) {
+      var sheetName = sheetMonth(mm);
+      var tasks = byMonth[mm];
+      sheetsGet("'" + sheetName + "'!B2:B200", function(data) {
+        var rows = data.values || [];
+        var emptyRows = [];
+        for (var i = 0; i < rows.length; i++) {
+          if (!rows[i] || !rows[i][0]) emptyRows.push(i + 2);
+        }
+        var sorted = tasks.slice().sort(function(a,b) { return (PORDER[a.priority]||4)-(PORDER[b.priority]||4); });
+        var updates = [];
+        var idx = 0;
+        sorted.forEach(function(t) {
+          if (idx >= emptyRows.length) return;
+          var row = emptyRows[idx++];
+          updates.push({ range:"'" + sheetName + "'!B" + row, values:[[t.time]] });
+          updates.push({ range:"'" + sheetName + "'!C" + row, values:[[t.name + (t.detail ? ' / ' + t.detail : '')]] });
+          updates.push({ range:"'" + sheetName + "'!H" + row, values:[[PLABEL[t.priority]||'']] });
+          updates.push({ range:"'" + sheetName + "'!I" + row, values:[[t.done?'TRUE':'FALSE']] });
+          if (t.note) updates.push({ range:"'" + sheetName + "'!J" + row, values:[[t.note]] });
+        });
+        var done = function() { remainingMonths--; if (!remainingMonths) { remainingGoals--; if (!remainingGoals && cb) cb(); } };
+        if (updates.length) {
+          sheetsBatchUpdate(updates, done, done);
+        } else { done(); }
+      }, function() { remainingMonths--; if (!remainingMonths) { remainingGoals--; if (!remainingGoals && cb) cb(); } });
+    });
   });
 }
 

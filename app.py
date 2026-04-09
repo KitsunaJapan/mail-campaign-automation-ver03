@@ -5,6 +5,7 @@ import requests
 import json
 import os
 import re
+from datetime import date, timedelta
 
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,7 +17,64 @@ SPREADSHEET_ID    = os.environ.get("SPREADSHEET_ID", "10gH3TlsQOtgPnDW1AhHErpxNs
 
 
 def check_auth():
-    return True  # 認証を一時無効化（動作確認用）
+    if not APP_PASSWORD:
+        return True
+    return request.headers.get("X-App-Password", "") == APP_PASSWORD
+
+
+def parse_period_to_weeks(period_str):
+    """
+    達成期間の文字列から週数を推定する
+    例: '3ヶ月' → 13週, '6ヶ月' → 26週, '1年' → 52週,
+        '2026年Q2' → 13週, '3週間' → 3週, '30日' → 5週
+    デフォルト: 4週
+    """
+    if not period_str:
+        return 4
+
+    p = period_str.replace(' ', '').replace('　', '')
+
+    # 年
+    m = re.search(r'(\d+(?:\.\d+)?)\s*年', p)
+    if m:
+        return int(float(m.group(1)) * 52)
+
+    # ヶ月 / カ月 / か月
+    m = re.search(r'(\d+(?:\.\d+)?)\s*[ヶカか]月', p)
+    if m:
+        return max(1, int(float(m.group(1)) * 4.3))
+
+    # 週間
+    m = re.search(r'(\d+)\s*週', p)
+    if m:
+        return int(m.group(1))
+
+    # 日
+    m = re.search(r'(\d+)\s*日', p)
+    if m:
+        return max(1, int(m.group(1)) // 7)
+
+    # Q1〜Q4
+    if re.search(r'Q[1-4]', p, re.IGNORECASE):
+        return 13
+
+    # 上半期 / 下半期
+    if '半期' in p:
+        return 26
+
+    return 4  # デフォルト4週
+
+
+def generate_week_dates(num_weeks):
+    """今日の週の月曜日から num_weeks 週分の月曜日リストを返す"""
+    today  = date.today()
+    monday = today - timedelta(days=today.weekday())
+    weeks  = []
+    for w in range(num_weeks):
+        week_start = monday + timedelta(weeks=w)
+        week_days  = [(week_start + timedelta(days=d)).isoformat() for d in range(7)]
+        weeks.append(week_days)
+    return weeks
 
 
 @app.route("/")
@@ -36,8 +94,8 @@ def login():
 def api_config():
     return jsonify({
         "hasAnthropicKey": bool(ANTHROPIC_API_KEY),
-        "googleClientId": os.environ.get("GOOGLE_CLIENT_ID", ""),
-        "spreadsheetId": SPREADSHEET_ID
+        "googleClientId":  os.environ.get("GOOGLE_CLIENT_ID", ""),
+        "spreadsheetId":   SPREADSHEET_ID
     })
 
 
@@ -53,39 +111,59 @@ def generate_tasks():
     if not goal.get("content"):
         return jsonify({"error": "目標内容が必要です"}), 400
 
-    from datetime import date, timedelta
-    today  = date.today()
-    monday = today - timedelta(days=today.weekday())
-    days   = [(monday + timedelta(days=i)).isoformat() for i in range(7)]
-    pmap   = {"asap": "ASAP", "high": "高", "mid": "中", "low": "低"}
+    pmap     = {"asap": "ASAP", "high": "高", "mid": "中", "low": "低"}
+    period   = goal.get("period", "")
+    num_weeks = parse_period_to_weeks(period)
+    # 最大26週（半年）に制限してトークン爆発を防ぐ
+    num_weeks = min(num_weeks, 26)
 
-    prompt = f"""あなたはタスク管理の専門家です。以下の中長期目標から今週の具体的な業務タスクを作成してください。
+    all_weeks = generate_week_dates(num_weeks)
+
+    # 全週の月曜日〜日曜日の日付範囲をプロンプトに渡す
+    week_summaries = []
+    for i, week in enumerate(all_weeks):
+        week_summaries.append(f"第{i+1}週: {week[0]} 〜 {week[6]}")
+
+    prompt = f"""あなたはタスク管理の専門家です。以下の中長期目標を達成するために、期間全体にわたる週次タスクを作成してください。
 
 目標: {goal.get('content', '')}
-達成期間: {goal.get('period', '未設定')}
+達成期間: {period}（{num_weeks}週間）
 担当者: {goal.get('owner', '未設定')}
 優先度: {pmap.get(goal.get('priority', ''), goal.get('priority', ''))}
 備考: {goal.get('note', 'なし')}
-今週の日付: {', '.join(days)}
+
+対象期間:
+{chr(10).join(week_summaries)}
+
+要件:
+- 各週に2〜5件のタスクを作成してください
+- 前半は基盤づくり・調査・計画、後半は実行・改善・仕上げというように段階的に設定してください
+- 各タスクは具体的なアクションとして記述してください
 
 以下のJSON配列のみを返してください（説明文・マークダウン不要）:
 [{{"date":"YYYY-MM-DD","time":"09-12","name":"タスク名30字以内","detail":"詳細80字以内","priority":"asap|high|mid|low"}}]
 
-今週全体で6〜10件、日付を分散させて作成してください。"""
+dateは各週のいずれかの日付（YYYY-MM-DD形式）を使用してください。"""
 
     try:
         client  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        # 週数に応じてmax_tokensを調整
+        max_tok = min(4096, 300 * num_weeks + 500)
         message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1500,
+            model="claude-sonnet-4-20250514",  # Sonnetで長い出力に対応
+            max_tokens=max_tok,
             messages=[{"role": "user", "content": prompt}]
         )
         text  = message.content[0].text.strip()
         match = re.search(r'\[[\s\S]*\]', text)
         if not match:
-            raise ValueError("JSONが見つかりません")
+            raise ValueError("JSONが見つかりません: " + text[:200])
         tasks = json.loads(match.group())
-        return jsonify({"tasks": tasks})
+        return jsonify({
+            "tasks": tasks,
+            "num_weeks": num_weeks,
+            "total_tasks": len(tasks)
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
