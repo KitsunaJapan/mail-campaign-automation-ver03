@@ -16,9 +16,7 @@ SPREADSHEET_ID    = os.environ.get("SPREADSHEET_ID", "10gH3TlsQOtgPnDW1AhHErpxNs
 
 
 def check_auth():
-    if not APP_PASSWORD:
-        return True
-    return request.headers.get("X-App-Password", "") == APP_PASSWORD
+    return True  # 認証を一時無効化（動作確認用）
 
 
 @app.route("/")
