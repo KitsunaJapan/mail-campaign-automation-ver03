@@ -12,61 +12,27 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-APP_PASSWORD      = os.environ.get("APP_PASSWORD", "")
 SPREADSHEET_ID    = os.environ.get("SPREADSHEET_ID", "10gH3TlsQOtgPnDW1AhHErpxNsBXv5kgudGJuHms5jyE")
 
 
-def check_auth():
-    if not APP_PASSWORD:
-        return True
-    return request.headers.get("X-App-Password", "") == APP_PASSWORD
-
-
 def parse_period_to_weeks(period_str):
-    """
-    達成期間の文字列から週数を推定する
-    例: '3ヶ月' → 13週, '6ヶ月' → 26週, '1年' → 52週,
-        '2026年Q2' → 13週, '3週間' → 3週, '30日' → 5週
-    デフォルト: 4週
-    """
     if not period_str:
         return 4
-
     p = period_str.replace(' ', '').replace('　', '')
-
-    # 年
     m = re.search(r'(\d+(?:\.\d+)?)\s*年', p)
-    if m:
-        return int(float(m.group(1)) * 52)
-
-    # ヶ月 / カ月 / か月
+    if m: return int(float(m.group(1)) * 52)
     m = re.search(r'(\d+(?:\.\d+)?)\s*[ヶカか]月', p)
-    if m:
-        return max(1, int(float(m.group(1)) * 4.3))
-
-    # 週間
+    if m: return max(1, int(float(m.group(1)) * 4.3))
     m = re.search(r'(\d+)\s*週', p)
-    if m:
-        return int(m.group(1))
-
-    # 日
+    if m: return int(m.group(1))
     m = re.search(r'(\d+)\s*日', p)
-    if m:
-        return max(1, int(m.group(1)) // 7)
-
-    # Q1〜Q4
-    if re.search(r'Q[1-4]', p, re.IGNORECASE):
-        return 13
-
-    # 上半期 / 下半期
-    if '半期' in p:
-        return 26
-
-    return 4  # デフォルト4週
+    if m: return max(1, int(m.group(1)) // 7)
+    if re.search(r'Q[1-4]', p, re.IGNORECASE): return 13
+    if '半期' in p: return 26
+    return 4
 
 
 def generate_week_dates(num_weeks):
-    """今日の週の月曜日から num_weeks 週分の月曜日リストを返す"""
     today  = date.today()
     monday = today - timedelta(days=today.weekday())
     weeks  = []
@@ -82,14 +48,6 @@ def index():
     return send_from_directory(BASE_DIR, "index.html")
 
 
-@app.route("/login", methods=["POST"])
-def login():
-    data = request.json or {}
-    if not APP_PASSWORD or data.get("password") == APP_PASSWORD:
-        return jsonify({"success": True})
-    return jsonify({"error": "パスワードが違います"}), 401
-
-
 @app.route("/api/config")
 def api_config():
     return jsonify({
@@ -101,8 +59,6 @@ def api_config():
 
 @app.route("/api/generate_tasks", methods=["POST"])
 def generate_tasks():
-    if not check_auth():
-        return jsonify({"error": "認証が必要です"}), 401
     if not ANTHROPIC_API_KEY:
         return jsonify({"error": "ANTHROPIC_API_KEY が未設定です"}), 503
 
@@ -111,15 +67,11 @@ def generate_tasks():
     if not goal.get("content"):
         return jsonify({"error": "目標内容が必要です"}), 400
 
-    pmap     = {"asap": "ASAP", "high": "高", "mid": "中", "low": "低"}
-    period   = goal.get("period", "")
-    num_weeks = parse_period_to_weeks(period)
-    # 最大26週（半年）に制限してトークン爆発を防ぐ
-    num_weeks = min(num_weeks, 26)
-
+    pmap      = {"asap": "ASAP", "high": "高", "mid": "中", "low": "低"}
+    period    = goal.get("period", "")
+    num_weeks = min(parse_period_to_weeks(period), 26)
     all_weeks = generate_week_dates(num_weeks)
 
-    # 全週の月曜日〜日曜日の日付範囲をプロンプトに渡す
     week_summaries = []
     for i, week in enumerate(all_weeks):
         week_summaries.append(f"第{i+1}週: {week[0]} 〜 {week[6]}")
@@ -147,10 +99,9 @@ dateは各週のいずれかの日付（YYYY-MM-DD形式）を使用してくだ
 
     try:
         client  = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        # 週数に応じてmax_tokensを調整
         max_tok = min(4096, 300 * num_weeks + 500)
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",  # Sonnetで長い出力に対応
+            model="claude-sonnet-4-20250514",
             max_tokens=max_tok,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -159,19 +110,13 @@ dateは各週のいずれかの日付（YYYY-MM-DD形式）を使用してくだ
         if not match:
             raise ValueError("JSONが見つかりません: " + text[:200])
         tasks = json.loads(match.group())
-        return jsonify({
-            "tasks": tasks,
-            "num_weeks": num_weeks,
-            "total_tasks": len(tasks)
-        })
+        return jsonify({"tasks": tasks, "num_weeks": num_weeks, "total_tasks": len(tasks)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/sheets/get", methods=["POST"])
 def sheets_get():
-    if not check_auth():
-        return jsonify({"error": "認証が必要です"}), 401
     data   = request.json or {}
     token  = data.get("token")
     range_ = data.get("range")
@@ -187,8 +132,6 @@ def sheets_get():
 
 @app.route("/api/sheets/batch_update", methods=["POST"])
 def sheets_batch_update():
-    if not check_auth():
-        return jsonify({"error": "認証が必要です"}), 401
     data    = request.json or {}
     token   = data.get("token")
     updates = data.get("data", [])
@@ -207,8 +150,6 @@ def sheets_batch_update():
 
 @app.route("/api/sheets/put", methods=["POST"])
 def sheets_put():
-    if not check_auth():
-        return jsonify({"error": "認証が必要です"}), 401
     data   = request.json or {}
     token  = data.get("token")
     range_ = data.get("range")
