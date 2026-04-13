@@ -1142,27 +1142,35 @@ function sheetsPut(range, values, cb, errCb) {
 function syncKPI() {
   if (!googleToken) { showToast('先にトークンを設定してください', 'error'); return; }
   setSyncResult('sync-kpi-result', '', '');
-  // A列だけで既存行を判定（B列はチェックボックスなので除外）
-  sheetsGet("'" + SHEET_KPI + "'!A2:A200", function(data) {
-    var existingNames = (data.values || []).map(function(r) { return r[0]; }).filter(Boolean);
-    // A列に値がある最終行の次から書き込む
-    var writeRow = existingNames.length + 2;
+  // A列とC列を取得して既存データを把握
+  sheetsGet("'" + SHEET_KPI + "'!A2:D200", function(data) {
+    var rows = data.values || [];
+    // A列に値がある行のプロジェクト名リスト
+    var existingNames = rows.map(function(r) { return r[0] || ''; }).filter(Boolean);
+    // 最後に使われている行番号を特定（A列またはC列に値がある最終行）
+    var lastUsedRow = 1; // 1-indexed（行2から開始なので+1）
+    for (var ri = 0; ri < rows.length; ri++) {
+      if (rows[ri] && (rows[ri][0] || rows[ri][2])) {
+        lastUsedRow = ri + 1;
+      }
+    }
+    var writeRow = lastUsedRow + 2; // 最終使用行の次の行（+1で次行、+1でスペース）
     var updates = [];
     var written = 0;
     state.goals.forEach(function(g) {
       if (existingNames.indexOf(g.content) !== -1) return;
       // A列: プロジェクトタイトル
       updates.push({ range: "'" + SHEET_KPI + "'!A" + writeRow, values: [[g.content]] });
-      // C列: サブタスク1件目（優先度・期間・担当者をまとめて記載）
+      // C列: 優先度・期間・担当者をサブタスク1行目に記載
       var summary = PLABEL[g.priority] + ' / ' + (g.period || '') + (g.owner ? ' / ' + g.owner : '');
       updates.push({ range: "'" + SHEET_KPI + "'!C" + writeRow, values: [[summary]] });
       // マイルストーン（C列に縦並び、D列にチェック）
       var ms = (g.milestones || []).slice(0, 4);
       ms.forEach(function(m, j) {
-        updates.push({ range: "'" + SHEET_KPI + "'!C" + (writeRow + j), values: [[m.text || '']] });
-        updates.push({ range: "'" + SHEET_KPI + "'!D" + (writeRow + j), values: [[m.done ? 'TRUE' : 'FALSE']] });
+        updates.push({ range: "'" + SHEET_KPI + "'!C" + (writeRow + j + 1), values: [[m.text || '']] });
+        updates.push({ range: "'" + SHEET_KPI + "'!D" + (writeRow + j + 1), values: [[m.done ? 'TRUE' : 'FALSE']] });
       });
-      writeRow += Math.max(ms.length, 1) + 1;
+      writeRow += Math.max(ms.length + 1, 2) + 1; // 目標行+マイルストーン行+空白行
       written++;
     });
     if (!updates.length) {
@@ -1219,12 +1227,15 @@ function syncTasks() {
       var sheetName = sheetMonth(mm);
       var tasks = byMonth[mm];
 
-      sheetsGet("'" + sheetName + "'!B2:B200", function(data) {
+      // C列（タスク名）で空き行を判定（B列はドロップダウン設定で誤判定が起きるため）
+      sheetsGet("'" + sheetName + "'!B2:I200", function(data) {
         var rows = data.values || [];
-        // B列が空の行を探す
+        // C列（インデックス1）が空の行を詰めて書き込む
         var emptyRows = [];
-        for (var i = 0; i < rows.length; i++) {
-          if (!rows[i] || !rows[i][0]) emptyRows.push(i + 2);
+        for (var i = 0; i < 200; i++) {
+          var row = rows[i];
+          var cVal = row ? (row[1] || '') : ''; // C列はB2:I200取得時のインデックス1
+          if (!cVal) emptyRows.push(i + 2);
         }
         // 優先度順ソート
         var sorted = tasks.slice().sort(function(a,b) { return (PORDER[a.priority]||4)-(PORDER[b.priority]||4); });
@@ -1274,9 +1285,14 @@ function syncTasks() {
 
 function syncKPISilent(cb) {
   if (!googleToken) { if (cb) cb(); return; }
-  sheetsGet("'" + SHEET_KPI + "'!A2:A200", function(data) {
-    var existingNames = (data.values || []).map(function(r) { return r[0]; }).filter(Boolean);
-    var writeRow = existingNames.length + 2;
+  sheetsGet("'" + SHEET_KPI + "'!A2:D200", function(data) {
+    var rows = data.values || [];
+    var existingNames = rows.map(function(r) { return r[0] || ''; }).filter(Boolean);
+    var lastUsedRow = 1;
+    for (var ri = 0; ri < rows.length; ri++) {
+      if (rows[ri] && (rows[ri][0] || rows[ri][2])) lastUsedRow = ri + 1;
+    }
+    var writeRow = lastUsedRow + 2;
     var updates = [];
     state.goals.forEach(function(g) {
       if (existingNames.indexOf(g.content) !== -1) return;
@@ -1285,10 +1301,10 @@ function syncKPISilent(cb) {
       updates.push({ range: "'" + SHEET_KPI + "'!C" + writeRow, values: [[summary]] });
       var ms = (g.milestones || []).slice(0, 4);
       ms.forEach(function(m, j) {
-        updates.push({ range: "'" + SHEET_KPI + "'!C" + (writeRow+j), values: [[m.text||'']] });
-        updates.push({ range: "'" + SHEET_KPI + "'!D" + (writeRow+j), values: [[m.done?'TRUE':'FALSE']] });
+        updates.push({ range: "'" + SHEET_KPI + "'!C" + (writeRow+j+1), values: [[m.text||'']] });
+        updates.push({ range: "'" + SHEET_KPI + "'!D" + (writeRow+j+1), values: [[m.done?'TRUE':'FALSE']] });
       });
-      writeRow += Math.max(ms.length, 1) + 1;
+      writeRow += Math.max(ms.length + 1, 2) + 1;
     });
     if (updates.length) {
       sheetsBatchUpdate(updates, function() { if (cb) cb(); }, function() { if (cb) cb(); });
@@ -1320,11 +1336,13 @@ function syncTasksSilent(cb) {
     months.forEach(function(mm) {
       var sheetName = sheetMonth(mm);
       var tasks = byMonth[mm];
-      sheetsGet("'" + sheetName + "'!B2:B200", function(data) {
+      sheetsGet("'" + sheetName + "'!B2:I200", function(data) {
         var rows = data.values || [];
         var emptyRows = [];
-        for (var i = 0; i < rows.length; i++) {
-          if (!rows[i] || !rows[i][0]) emptyRows.push(i + 2);
+        for (var i = 0; i < 200; i++) {
+          var row = rows[i];
+          var cVal = row ? (row[1] || '') : '';
+          if (!cVal) emptyRows.push(i + 2);
         }
         var sorted = tasks.slice().sort(function(a,b) { return (PORDER[a.priority]||4)-(PORDER[b.priority]||4); });
         var updates = [];
